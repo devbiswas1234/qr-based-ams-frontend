@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/axios";
+import { startTokenTimer } from "../utils/tokenTimer"; // <-- import
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -13,16 +14,16 @@ export default function Login() {
     setError("");
 
     try {
-      const res = await api.post("/auth/login", {
-        email,
-        password,
-      });
+      const res = await api.post("/auth/login", { email, password });
 
-      // ✅ SAVE AUTH DATA
+      // ✅ Save token & user
       localStorage.setItem("token", res.data.token);
       localStorage.setItem("user", JSON.stringify(res.data.user));
 
-      // ✅ ROLE BASED REDIRECT
+      // ✅ Start token auto-logout timer
+      startTokenTimer();
+
+      // ✅ Role-based redirect
       if (res.data.user.role === "admin") {
         navigate("/admin", { replace: true });
       } else {
@@ -40,11 +41,9 @@ export default function Login() {
         className="bg-white p-6 rounded-lg shadow-md w-80"
       >
         <h2 className="text-2xl font-bold mb-4 text-center">Login</h2>
-
         {error && (
           <p className="text-red-600 text-sm mb-3 text-center">{error}</p>
         )}
-
         <input
           type="email"
           placeholder="Email"
@@ -53,7 +52,6 @@ export default function Login() {
           onChange={(e) => setEmail(e.target.value)}
           required
         />
-
         <input
           type="password"
           placeholder="Password"
@@ -62,7 +60,6 @@ export default function Login() {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-
         <button
           type="submit"
           className="bg-blue-600 text-white w-full py-2 rounded hover:bg-blue-700 transition"
