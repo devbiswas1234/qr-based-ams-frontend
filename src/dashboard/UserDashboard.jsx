@@ -1,21 +1,20 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { logout } from "../utils/logout";
-import { markAttendance, getMyAttendance, scanSession } from "../api/attendance";
+import { markAttendance, getMyAttendance } from "../api/attendance";
 import api from "../api/axios";
+import ScanQR from "../components/ScanQR";
 
 export default function UserDashboard() {
   const [user, setUser] = useState(null);
   const [attendance, setAttendance] = useState([]);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
-  const [markedToday, setMarkedToday] = useState(false);
-  const [scanning, setScanning] = useState(false);
 
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const qrScanInterval = useRef(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [sessionExpiry, setSessionExpiry] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(null);
 
-  // Fetch profile & attendance
+  // 🔹 Fetch profile & attendance
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -23,10 +22,7 @@ export default function UserDashboard() {
         setUser(profileRes.data);
 
         const attendanceRes = await getMyAttendance();
-        setAttendance(attendanceRes);
-
-        const today = new Date().toLocaleDateString();
-        setMarkedToday(attendanceRes.some(a => new Date(a.timestamp).toLocaleDateString() === today));
+        setAttendance(attendanceRes || []);
       } catch (err) {
         console.error(err);
       }
@@ -34,120 +30,180 @@ export default function UserDashboard() {
     fetchData();
   }, []);
 
-  // HTML5 QR Scanner
-  const startScanner = async () => {
-    setScanning(true);
-    setStatus("");
+  // 🔹 Countdown timer
+  useEffect(() => {
+    if (!sessionExpiry) return;
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      videoRef.current.srcObject = stream;
-      videoRef.current.setAttribute("playsinline", true);
-      videoRef.current.play();
+    const interval = setInterval(() => {
+      const diff = new Date(sessionExpiry) - new Date();
 
-      qrScanInterval.current = setInterval(scanFrame, 300);
-    } catch (err) {
-      console.error(err);
-      setStatus("❌ Could not access camera");
-      setScanning(false);
-    }
+      if (diff <= 0) {
+        clearInterval(interval);
+        setSessionId(null);
+        setSessionExpiry(null);
+        setTimeLeft(null);
+        setStatus("⏱ QR session expired. Please scan again.");
+      } else {
+        setTimeLeft(Math.floor(diff / 1000));
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [sessionExpiry]);
+
+  // 🔹 Auto-clear status
+  useEffect(() => {
+    if (!status) return;
+    const t = setTimeout(() => setStatus(""), 4000);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  const handleSessionValidated = (sid, expiresAt) => {
+    setSessionId(sid);
+    setSessionExpiry(expiresAt);
+    setStatus("✅ QR scanned successfully. You can mark attendance.");
   };
 
-  const stopScanner = () => {
-    clearInterval(qrScanInterval.current);
-    qrScanInterval.current = null;
+  const handleMarkAttendance = () => {
+    if (!sessionId || loading) return;
 
-    const stream = videoRef.current?.srcObject;
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
+    if (!navigator.geolocation) {
+      alert("Geolocation not supported");
+      return;
     }
 
-    setScanning(false);
-  };
-
-  const scanFrame = async () => {
-    if (!videoRef.current || videoRef.current.readyState !== videoRef.current.HAVE_ENOUGH_DATA) return;
-
-    const canvas = canvasRef.current;
-    const context = canvas.getContext("2d");
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    const code = window.jsQR(imageData.data, imageData.width, imageData.height);
-
-    if (code) {
-      stopScanner();
-      handleScanSuccess(code.data);
-    }
-  };
-
-  const handleScanSuccess = async (sessionId) => {
     setLoading(true);
-    try {
-      await markAttendance(user.latitude, user.longitude, sessionId); // pass lat, lng, sessionId
-      setStatus("✅ Attendance marked successfully");
-      const data = await getMyAttendance();
-      setAttendance(data);
-      setMarkedToday(true);
-    } catch (err) {
-      setStatus(err.response?.data?.message || "❌ Failed to mark attendance");
-    } finally {
-      setLoading(false);
-    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          await markAttendance(
+            pos.coords.latitude,
+            pos.coords.longitude,
+            sessionId
+          );
+
+          setStatus("✅ Attendance marked successfully");
+          setSessionId(null);
+
+          const data = await getMyAttendance();
+          setAttendance(data || []);
+        } catch (err) {
+          setStatus(
+            err.response?.data?.message || "❌ Failed to mark attendance"
+          );
+        } finally {
+          setLoading(false);
+        }
+      },
+      () => {
+        setLoading(false);
+        alert("Could not get your location");
+      }
+    );
   };
 
-  if (!user) return <div className="min-h-screen flex items-center justify-center"><p>Loading...</p></div>;
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900 text-slate-200">
+        Loading dashboard...
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <header className="bg-white shadow p-4 flex justify-between items-center">
-        <h1 className="text-xl font-bold text-gray-800">User Dashboard</h1>
-        <button onClick={logout} className="text-sm bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600">Logout</button>
+    <div className="min-h-screen bg-slate-900 text-slate-100">
+      {/* Header */}
+      <header className="bg-slate-950 border-b border-slate-800 p-4 flex justify-between items-center">
+        <h1 className="text-xl font-bold text-blue-400">User Dashboard</h1>
+        <button
+          onClick={logout}
+          className="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 transition"
+        >
+          Logout
+        </button>
       </header>
 
-      <main className="max-w-5xl mx-auto p-6">
+      <main className="max-w-5xl mx-auto p-6 space-y-6">
         {/* Profile */}
-        <div className="bg-white rounded-lg shadow p-5 mb-6">
-          <h2 className="text-lg font-semibold mb-2">Profile</h2>
-          <p><strong>Name:</strong> {user.name}</p>
-          <p><strong>Email:</strong> {user.email}</p>
-          <p><strong>Role:</strong> {user.role}</p>
-        </div>
+        <section className="bg-slate-800 p-4 rounded-lg shadow">
+          <h2 className="font-semibold mb-2 text-blue-400">Profile</h2>
+          <p><b>Name:</b> {user.name}</p>
+          <p><b>Email:</b> {user.email}</p>
+          <p><b>Role:</b> {user.role}</p>
+        </section>
 
         {/* QR Scanner */}
-        <div className="bg-white rounded-lg shadow p-5 mb-6 flex flex-col items-center">
-          <h2 className="text-lg font-semibold mb-2">Scan QR to Mark Attendance</h2>
-          {!scanning && !markedToday && (
-            <button
-              onClick={startScanner}
-              className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 mb-2"
-            >Start Scanner</button>
+        <section className="bg-slate-800 p-4 rounded-lg shadow">
+          <h2 className="font-semibold mb-2 text-blue-400">
+            Scan Attendance QR
+          </h2>
+
+          {!sessionId ? (
+            <ScanQR
+              onSessionValidated={handleSessionValidated}
+              sessionId={sessionId}
+            />
+          ) : (
+            <span className="inline-block bg-green-600/20 text-green-400 px-3 py-1 rounded font-medium">
+              ⏳ Expires in{" "}
+              {Math.floor((timeLeft || 0) / 60)}:
+              {((timeLeft || 0) % 60).toString().padStart(2, "0")}
+            </span>
           )}
-          <video ref={videoRef} className="w-full max-w-md mb-2" />
-          <canvas ref={canvasRef} className="hidden" />
-          {status && <p className="text-center font-medium">{status}</p>}
-        </div>
+        </section>
+
+        {/* Mark Attendance */}
+        <section className="bg-slate-800 p-4 rounded-lg shadow flex justify-between items-center">
+          <div>
+            <h2 className="font-semibold text-blue-400">Mark Attendance</h2>
+            <p className="text-sm text-slate-400">
+              Scan QR → Location check → Submit
+            </p>
+          </div>
+
+          <button
+            onClick={handleMarkAttendance}
+            disabled={!sessionId || loading}
+            className={`px-4 py-2 rounded text-white transition ${
+              !sessionId || loading
+                ? "bg-slate-600 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700"
+            }`}
+          >
+            {loading ? "Marking..." : "Mark Attendance"}
+          </button>
+        </section>
+
+        {/* Status */}
+        {status && (
+          <div className="text-center">
+            <span className="inline-block px-4 py-2 bg-slate-700 rounded">
+              {status}
+            </span>
+          </div>
+        )}
 
         {/* Attendance History */}
-        <div className="bg-white rounded-lg shadow p-5">
-          <h2 className="text-lg font-semibold mb-4">Attendance History</h2>
+        <section className="bg-slate-800 p-4 rounded-lg shadow">
+          <h2 className="font-semibold mb-2 text-blue-400">
+            Attendance History
+          </h2>
+
           {attendance.length === 0 ? (
-            <p className="text-gray-500 text-center">No attendance records yet.</p>
+            <p className="text-slate-400">No records yet</p>
           ) : (
-            <div className="grid md:grid-cols-2 gap-4">
-              {attendance.map(a => (
-                <div key={a.id} className="border rounded-lg p-4 bg-gray-50">
-                  <p><strong>Date:</strong> {new Date(a.timestamp).toLocaleDateString()}</p>
-                  <p><strong>Time:</strong> {new Date(a.timestamp).toLocaleTimeString()}</p>
-                  <p className="text-sm text-gray-600">📍 {a.lat}, {a.lng}</p>
-                </div>
-              ))}
-            </div>
+            attendance.map((a) => (
+              <div
+                key={a.id}
+                className="border border-slate-700 rounded p-2 mb-2 flex justify-between text-slate-300"
+              >
+                <span>{a.date}</span>
+                <span>{new Date(a.time).toLocaleTimeString()}</span>
+              </div>
+            ))
           )}
-        </div>
+        </section>
       </main>
     </div>
   );
